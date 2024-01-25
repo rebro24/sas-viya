@@ -1,0 +1,161 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-local-storage-provisioner-scripts
+  namespace: default
+data:
+  smoke.sh: |
+      #!/bin/bash
+      echo
+      echo "hostname"
+            hostname
+      echo
+      echo "whoami"
+            whoami
+      echo
+      echo "df -PH"
+            df -PH
+      echo
+      echo "##### context=container"
+      echo "find /node-local-script-dir/"
+            find /node-local-script-dir/
+      for iii in /node-local-script-dir /node-local-script-dir/disks /node-local-script-dir/disks/node-local-storage; do
+        if [[ -d $iii ]]; then
+          echo
+          echo "ls -al $iii/"
+                ls -al $iii/
+        fi
+      done
+      echo
+      echo "##### context=node"
+      echo "find /mnt/"
+            find /mnt/
+      for iii in /mnt /mnt/disks /mnt/disks/node-local-storage; do
+        if [[ -d $iii ]]; then
+          echo
+          echo "ls -al $iii/"
+                ls -al $iii/
+        fi
+      done
+  azNodeLocalDiskPrep.sh: |
+      #!/bin/bash
+      MYRAID0DIR=/mnt/disks/node-local-storage
+      echo
+      echo "hostname"
+            hostname
+      echo
+      echo "whoami"
+            whoami
+      echo
+      echo "df -PH"
+            df -PH
+      echo
+      echo "##### Before"
+      echo "ls -al $MYRAID0DIR"
+            ls -al $MYRAID0DIR
+      echo
+      echo "##### Prep Dirs"
+      echo mkdir -p     $MYRAID0DIR/{cache,saswork}
+           mkdir -p     $MYRAID0DIR/{cache,saswork}
+      echo
+      echo chmod 777 -R $MYRAID0DIR/
+           chmod 777 -R $MYRAID0DIR/
+      echo
+      echo "##### After"
+      echo "ls -al $MYRAID0DIR"
+            ls -al $MYRAID0DIR
+      echo
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  namespace: default
+  name: node-local-storage-provisioner
+  labels:
+    app: node-local-storage-provisioner
+spec:
+  selector:
+    matchLabels:
+      name: node-local-storage-provisioner
+  template:
+    metadata:
+      labels:
+        name: node-local-storage-provisioner
+
+    spec:
+      hostPID: true
+      automountServiceAccountToken: false
+      imagePullSecrets: []
+      priorityClassName: system-node-critical
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: workload.sas.com/class
+                operator: In
+                values:
+                  - cas
+                  - compute
+      tolerations:
+        - effect: NoSchedule
+          key: workload.sas.com/class
+          operator: Equal
+          value: cas
+        - effect: NoSchedule
+          key: workload.sas.com/class
+          operator: Equal
+          value: compute
+      volumes:
+      - name: configmap-vol
+        configMap:
+          name: node-local-storage-provisioner-scripts
+      - name: node-local-script-dir # mynode-mnt
+        hostPath:
+          path: /mnt # was gcp-node:/mnt/disks
+      containers:
+      - image: "gcr.io/google-containers/pause:2.0"
+        name: pause
+      initContainers:
+      - name: node-local-storage-provisioner
+        image: ubuntu:18.04
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: configmap-vol
+          mountPath: /configmap-vol-mount
+        - name: node-local-script-dir
+          mountPath: /node-local-script-dir
+        command:
+          - /bin/bash
+          - -c
+          - |
+            set -e
+            set -x
+
+            ##### Smoke Test
+            
+            # In container: make script executable and run it (must copy to non read-only filesystem first)
+            #cp /configmap-vol-mount/smoke.sh /tmp/smoke.sh
+            #chmod +x /tmp/smoke.sh
+            #/tmp/smoke.sh
+            
+            # Copy script from container to node
+            #cp /configmap-vol-mount/smoke.sh /node-local-script-dir/
+            
+            # On node: make script executable and run it
+            #/usr/bin/nsenter -m/proc/1/ns/mnt -- chmod u+x /mnt/smoke.sh
+            #/usr/bin/nsenter -m/proc/1/ns/mnt /mnt/smoke.sh
+            
+            
+            ##### NodeLocalDisk Prep
+            
+            # Copy script from container to node
+            cp /configmap-vol-mount/azNodeLocalDiskPrep.sh /node-local-script-dir/
+            
+            # On node: make script executable & run it
+            /usr/bin/nsenter -m/proc/1/ns/mnt -- chmod u+x /mnt/azNodeLocalDiskPrep.sh
+            /usr/bin/nsenter -m/proc/1/ns/mnt /mnt/azNodeLocalDiskPrep.sh
+---
+
